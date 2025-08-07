@@ -22,6 +22,8 @@
 (define-constant ERR-DISPUTE-RESOLUTION-EXPIRED (err u111))
 (define-constant ERR-PAYMENT-ALREADY-RELEASED (err u112))
 (define-constant ERR-INSUFFICIENT-FUNDS (err u113))
+(define-constant ERR-MILESTONE-ALREADY-EXISTS (err u114))
+(define-constant ERR-INVALID-MILESTONE-NUMBER (err u115))
 
 ;; PLATFORM CONFIGURATION VARIABLES
 
@@ -460,22 +462,26 @@
 
 ;; MILESTONE MANAGEMENT SYSTEM
 
-;; Create project milestone
+;; Create project milestone with proper validation
 (define-public (establish-project-milestone
     (parent-agreement-id uint)
     (milestone-sequence-number uint)
     (milestone-compensation-amount uint)
     (milestone-delivery-deadline uint))
     
-    (let ((agreement-details (unwrap! (retrieve-work-agreement-details parent-agreement-id) ERR-WORK-AGREEMENT-NOT-FOUND)))
+    (let ((agreement-details (unwrap! (retrieve-work-agreement-details parent-agreement-id) ERR-WORK-AGREEMENT-NOT-FOUND))
+          (validated-milestone-number (validate-milestone-sequence-number milestone-sequence-number))
+          (existing-milestone (retrieve-milestone-information parent-agreement-id validated-milestone-number)))
         
         (asserts! (or (is-eq tx-sender (get service-provider-wallet agreement-details))
                       (is-eq tx-sender (get project-client-wallet agreement-details))) ERR-ACCESS-DENIED)
         (asserts! (> milestone-compensation-amount u0) ERR-INVALID-PARAMETERS)
         (asserts! (> milestone-delivery-deadline block-height) ERR-INVALID-PROJECT-TIMELINE)
+        (asserts! (> validated-milestone-number u0) ERR-INVALID-MILESTONE-NUMBER) ;; Check validation result
+        (asserts! (is-none existing-milestone) ERR-MILESTONE-ALREADY-EXISTS)
         
         (map-set project-milestone-registry
-            { agreement-id: parent-agreement-id, milestone-sequence-number: milestone-sequence-number }
+            { agreement-id: parent-agreement-id, milestone-sequence-number: validated-milestone-number }
             {
                 milestone-compensation-value: milestone-compensation-amount,
                 milestone-completion-status: false,
@@ -494,13 +500,15 @@
     (completed-milestone-number uint))
     
     (let ((agreement-details (unwrap! (retrieve-work-agreement-details parent-agreement-id) ERR-WORK-AGREEMENT-NOT-FOUND))
-          (milestone-details (unwrap! (retrieve-milestone-information parent-agreement-id completed-milestone-number) ERR-WORK-AGREEMENT-NOT-FOUND)))
+          (validated-milestone-number (validate-milestone-sequence-number completed-milestone-number))
+          (milestone-details (unwrap! (retrieve-milestone-information parent-agreement-id validated-milestone-number) ERR-WORK-AGREEMENT-NOT-FOUND)))
         
         (asserts! (is-eq tx-sender (get service-provider-wallet agreement-details)) ERR-ACCESS-DENIED)
+        (asserts! (> validated-milestone-number u0) ERR-INVALID-MILESTONE-NUMBER) ;; Check validation result
         (asserts! (not (get milestone-completion-status milestone-details)) ERR-INVALID-STATUS-CHANGE)
         
         (map-set project-milestone-registry
-            { agreement-id: parent-agreement-id, milestone-sequence-number: completed-milestone-number }
+            { agreement-id: parent-agreement-id, milestone-sequence-number: validated-milestone-number }
             (merge milestone-details {
                 milestone-completion-status: true,
                 milestone-delivery-timestamp: (some block-height)
@@ -516,14 +524,16 @@
     (approved-milestone-number uint))
     
     (let ((agreement-details (unwrap! (retrieve-work-agreement-details parent-agreement-id) ERR-WORK-AGREEMENT-NOT-FOUND))
-          (milestone-details (unwrap! (retrieve-milestone-information parent-agreement-id approved-milestone-number) ERR-WORK-AGREEMENT-NOT-FOUND)))
+          (validated-milestone-number (validate-milestone-sequence-number approved-milestone-number))
+          (milestone-details (unwrap! (retrieve-milestone-information parent-agreement-id validated-milestone-number) ERR-WORK-AGREEMENT-NOT-FOUND)))
         
         (asserts! (is-eq tx-sender (get project-client-wallet agreement-details)) ERR-ACCESS-DENIED)
+        (asserts! (> validated-milestone-number u0) ERR-INVALID-MILESTONE-NUMBER) ;; Check validation result
         (asserts! (get milestone-completion-status milestone-details) ERR-INVALID-STATUS-CHANGE)
         (asserts! (not (get client-approval-received milestone-details)) ERR-INVALID-STATUS-CHANGE)
         
         (map-set project-milestone-registry
-            { agreement-id: parent-agreement-id, milestone-sequence-number: approved-milestone-number }
+            { agreement-id: parent-agreement-id, milestone-sequence-number: validated-milestone-number }
             (merge milestone-details { client-approval-received: true })
         )
         (ok true)
@@ -657,4 +667,12 @@
 ;; Validate rating values
 (define-private (validate-rating-value-range (rating-value uint))
     (and (>= rating-value u1) (<= rating-value u5))
+)
+
+;; Validate milestone sequence number to prevent malicious inputs
+(define-private (validate-milestone-sequence-number (sequence-number uint))
+    (if (and (> sequence-number u0) (<= sequence-number u1000))
+        sequence-number
+        u0 ;; Return 0 for invalid numbers, will be caught by caller
+    )
 )
